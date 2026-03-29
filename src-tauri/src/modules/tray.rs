@@ -29,6 +29,7 @@ pub fn create_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
     // Quick actions area
     let switch_next = MenuItem::with_id(app, "switch_next", &texts.switch_next, true, None::<&str>)?;
     let refresh_curr = MenuItem::with_id(app, "refresh_curr", &texts.refresh_current, true, None::<&str>)?;
+    let review_rotation = MenuItem::with_id(app, "review_rotation", "Review Rotation Suggestion", true, None::<&str>)?;
     
     // System functions
     let show_i = MenuItem::with_id(app, "show", &texts.show_window, true, None::<&str>)?;
@@ -45,6 +46,7 @@ pub fn create_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
         &sep1,
         &switch_next,
         &refresh_curr,
+        &review_rotation,
         &sep2,
         &show_i,
         &sep3,
@@ -98,6 +100,7 @@ pub fn create_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
                                          let _ = modules::update_account_quota(&account.id, quota);
                                          // Update tray display
                                          update_tray_menus(&app_handle);
+                                         let _ = app_handle.emit("rotation://refresh-hint", ());
                                      },
                                      Err(e) => {
                                          // Error handling, log only
@@ -107,6 +110,13 @@ pub fn create_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
                              }
                         }
                     });
+                }
+                "review_rotation" => {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                    let _ = app.emit("rotation://focus-suggestion", ());
                 }
                 "switch_next" => {
                     tauri::async_runtime::spawn(async move {
@@ -130,6 +140,7 @@ pub fn create_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
                              if let Ok(_) = modules::switch_account(&next_account.id, &integration).await {
                                  // 3. Notify frontend
                                  let _ = app_handle.emit("tray://account-switched", next_account.id.clone());
+                                 let _ = app_handle.emit("rotation://refresh-hint", ());
                                  // 4. Update tray
                                  update_tray_menus(&app_handle);
                              }
@@ -182,6 +193,12 @@ pub fn update_tray_menus(app: &tauri::AppHandle) {
          
          // Get current account info
          let current = modules::get_current_account_id().unwrap_or(None);
+         let rotation_state = app_clone.try_state::<crate::modules::rotation::RotationState>();
+         let rotation_suggestion = if config.rotation.notification_channels.tray {
+             rotation_state.and_then(|state| state.suggestion())
+         } else {
+             None
+         };
          
          let mut menu_lines = Vec::new();
          let mut user_text = format!("{}: {}", texts.current, texts.no_account);
@@ -236,15 +253,31 @@ pub fn update_tray_menus(app: &tauri::AppHandle) {
          
          let switch_next = MenuItem::with_id(&app_clone, "switch_next", &texts.switch_next, true, None::<&str>);
          let refresh_curr = MenuItem::with_id(&app_clone, "refresh_curr", &texts.refresh_current, true, None::<&str>);
+         let review_rotation = MenuItem::with_id(
+             &app_clone,
+             "review_rotation",
+             if rotation_suggestion.is_some() {
+                 "Review Rotation Suggestion"
+             } else {
+                 "No Rotation Suggestion"
+             },
+             rotation_suggestion.is_some(),
+             None::<&str>,
+         );
          
          let show_i = MenuItem::with_id(&app_clone, "show", &texts.show_window, true, None::<&str>);
          let quit_i = MenuItem::with_id(&app_clone, "quit", &texts.quit, true, None::<&str>);
          
-         if let (Ok(i_u), Ok(s_n), Ok(r_c), Ok(s), Ok(q)) = (info_user, switch_next, refresh_curr, show_i, quit_i) {
+         if let (Ok(i_u), Ok(s_n), Ok(r_c), Ok(r_r), Ok(s), Ok(q)) = (info_user, switch_next, refresh_curr, review_rotation, show_i, quit_i) {
              let sep1 = PredefinedMenuItem::separator(&app_clone).ok();
              let sep2 = PredefinedMenuItem::separator(&app_clone).ok();
              let sep3 = PredefinedMenuItem::separator(&app_clone).ok();
              
+             let rotation_info = rotation_suggestion.as_ref().and_then(|suggestion| {
+                 let summary = format!("Rotation: {}", suggestion.candidate.email);
+                 MenuItem::with_id(&app_clone, "rotation_info", summary, false, None::<&str>).ok()
+             });
+
              let mut items: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = vec![&i_u];
              // Add dynamic quota items
              for item in &quota_items {
@@ -254,6 +287,12 @@ pub fn update_tray_menus(app: &tauri::AppHandle) {
              if let Some(ref s) = sep1 { items.push(s); }
              items.push(&s_n);
              items.push(&r_c);
+             if rotation_suggestion.is_some() {
+                 if let Some(ref info) = rotation_info {
+                     items.push(info);
+                 }
+                 items.push(&r_r);
+             }
              if let Some(ref s) = sep2 { items.push(s); }
              items.push(&s);
              if let Some(ref s) = sep3 { items.push(s); }

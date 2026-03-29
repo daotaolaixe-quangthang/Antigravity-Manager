@@ -123,6 +123,25 @@ export interface CircuitBreakerConfig {
     backoff_steps: number[];
 }
 
+export type RotationMode = 'semi_auto';
+
+export interface RotationNotificationChannels {
+    tray: boolean;
+    popup: boolean;
+}
+
+export interface RotationConfig {
+    enabled: boolean;
+    mode: RotationMode;
+    target_models: string[];
+    quota_threshold_percentage: number;
+    trigger_on_forbidden: boolean;
+    trigger_on_validation_blocked: boolean;
+    cooldown_seconds: number;
+    notification_channels: RotationNotificationChannels;
+    require_confirmation: boolean;
+}
+
 export interface AppConfig {
     language: string;
     theme: string;
@@ -142,6 +161,7 @@ export interface AppConfig {
     quota_protection: QuotaProtectionConfig; // [NEW] 配额保护配置
     pinned_quota_models: PinnedQuotaModelsConfig; // [NEW] 配额关注列表
     circuit_breaker: CircuitBreakerConfig; // [NEW] 熔断器配置
+    rotation: RotationConfig; // [NEW] Native IDE semi-auto rotation
     proxy: ProxyConfig;
     cloudflared: CloudflaredConfig; // [NEW] Cloudflared 配置
 }

@@ -312,6 +312,7 @@ pub fn run() {
         }))
         .manage(commands::proxy::ProxyServiceState::new())
         .manage(commands::cloudflared::CloudflaredState::new())
+        .manage(modules::rotation::RotationState::default())
         .manage(AppRuntimeFlags { tray_enabled })
         .setup(|app| {
             info!("Setup starting...");
@@ -535,6 +536,10 @@ pub fn run() {
             commands::get_token_stats_model_trend_daily,
             commands::get_token_stats_account_trend_hourly,
             commands::get_token_stats_account_trend_daily,
+            commands::get_rotation_status,
+            commands::evaluate_rotation_now,
+            commands::dismiss_rotation_suggestion,
+            commands::execute_rotation_switch,
             proxy::cli_sync::get_cli_sync_status,
             proxy::cli_sync::execute_cli_sync,
             proxy::cli_sync::execute_cli_restore,

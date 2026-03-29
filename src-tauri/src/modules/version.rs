@@ -1,5 +1,4 @@
 use crate::modules::process;
-use std::fs;
 use std::path::PathBuf;
 
 /// Antigravity 版本信息
@@ -11,6 +10,7 @@ pub struct AntigravityVersion {
 }
 
 /// 从任意字符串中提取第一个语义化版本号 (X.Y.Z)
+#[allow(dead_code)]
 fn extract_semver(raw: &str) -> Option<String> {
     for token in raw.split(|c: char| c.is_whitespace() || c == ',' || c == ';') {
         let t = token.trim_matches(|c: char| c == '"' || c == '\'' || c == '(' || c == ')');
@@ -60,6 +60,7 @@ pub fn get_antigravity_version() -> Result<AntigravityVersion, String> {
 /// macOS: 从 Info.plist 读取版本
 #[cfg(target_os = "macos")]
 fn get_version_macos(exe_path: &PathBuf) -> Result<AntigravityVersion, String> {
+    use std::fs;
     use plist::Value;
     
     // exe_path 可能是 /Applications/Antigravity.app 或内部可执行文件
@@ -140,6 +141,7 @@ fn get_version_windows(exe_path: &PathBuf) -> Result<AntigravityVersion, String>
 /// Linux: 从 package.json 或 --version 参数读取
 #[cfg(target_os = "linux")]
 fn get_version_linux(exe_path: &PathBuf) -> Result<AntigravityVersion, String> {
+    use std::fs;
     use std::process::Command;
     
     // 方法1: 尝试执行 --version

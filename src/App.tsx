@@ -20,6 +20,8 @@ import { listen } from '@tauri-apps/api/event';
 import { isTauri } from './utils/env';
 import { request as invoke } from './utils/request';
 import { AdminAuthGuard } from './components/common/AdminAuthGuard';
+import { showToast } from './components/common/ToastContainer';
+import RotationSuggestionDialog, { RotationSuggestion } from './components/rotation/RotationSuggestionDialog';
 
 const router = createBrowserRouter([
   {
@@ -66,6 +68,38 @@ function App() {
   const { config, loadConfig } = useConfigStore();
   const { fetchCurrentAccount, fetchAccounts } = useAccountStore();
   const { i18n } = useTranslation();
+  const [rotationSuggestion, setRotationSuggestion] = useState<RotationSuggestion | null>(null);
+  const [rotationSwitching, setRotationSwitching] = useState(false);
+
+  const syncRotationStatus = async () => {
+    if (!isTauri()) return;
+    try {
+      const status = await invoke<{
+        enabled: boolean;
+        suggestion?: RotationSuggestion | null;
+        is_switching: boolean;
+        last_evaluated_at?: number | null;
+      }>('get_rotation_status');
+      setRotationSuggestion(status?.suggestion || null);
+      setRotationSwitching(Boolean(status?.is_switching));
+    } catch {
+    }
+  };
+
+  const evaluateRotationNow = async () => {
+    if (!isTauri()) return;
+    try {
+      const status = await invoke<{
+        enabled: boolean;
+        suggestion?: RotationSuggestion | null;
+        is_switching: boolean;
+        last_evaluated_at?: number | null;
+      }>('evaluate_rotation_now');
+      setRotationSuggestion(status?.suggestion || null);
+      setRotationSwitching(Boolean(status?.is_switching));
+    } catch {
+    }
+  };
 
   useEffect(() => {
     loadConfig();
@@ -116,13 +150,59 @@ function App() {
       })
     );
 
+    unlistenPromises.push(
+      listen<RotationSuggestion>('rotation://suggested', (event) => {
+        setRotationSuggestion(event.payload);
+        if (config?.rotation?.notification_channels?.popup !== false) {
+          showToast(
+            `Rotation suggested: ${event.payload.current_account_email} -> ${event.payload.candidate.email}`,
+            'warning',
+            5000
+          );
+        }
+      })
+    );
+
+    unlistenPromises.push(
+      listen('rotation://dismissed', () => {
+        setRotationSuggestion(null);
+      })
+    );
+
+    unlistenPromises.push(
+      listen<RotationSuggestion>('rotation://executed', (event) => {
+        setRotationSuggestion(null);
+        setRotationSwitching(false);
+        fetchCurrentAccount();
+        fetchAccounts();
+        showToast(`Switched to ${event.payload.candidate.email}`, 'success');
+      })
+    );
+
+    unlistenPromises.push(
+      listen('rotation://focus-suggestion', () => {
+        syncRotationStatus();
+      })
+    );
+
+    unlistenPromises.push(
+      listen('rotation://refresh-hint', () => {
+        evaluateRotationNow();
+      })
+    );
+
     // Cleanup
     return () => {
       Promise.all(unlistenPromises).then(unlisteners => {
         unlisteners.forEach(unlisten => unlisten());
       });
     };
-  }, [fetchCurrentAccount, fetchAccounts]);
+  }, [config?.rotation?.notification_channels?.popup, fetchCurrentAccount, fetchAccounts]);
+
+  useEffect(() => {
+    if (!isTauri() || !config?.rotation?.enabled) return;
+    syncRotationStatus();
+  }, [config?.rotation?.enabled]);
 
   // Update notification state
   const [showUpdateNotification, setShowUpdateNotification] = useState(false);
@@ -152,10 +232,37 @@ function App() {
     return () => clearTimeout(timer);
   }, []);
 
+  const handleRotationSwitch = async () => {
+    if (!rotationSuggestion || rotationSwitching) return;
+    setRotationSwitching(true);
+    try {
+      await invoke('execute_rotation_switch');
+    } catch (error) {
+      setRotationSwitching(false);
+      showToast(`Rotation switch failed: ${error}`, 'error');
+    }
+  };
+
+  const handleRotationDismiss = async (remindAfterSeconds?: number) => {
+    try {
+      await invoke('dismiss_rotation_suggestion', { remindAfterSeconds });
+      setRotationSuggestion(null);
+    } catch (error) {
+      showToast(`Failed to dismiss suggestion: ${error}`, 'error');
+    }
+  };
+
   return (
     <AdminAuthGuard>
       <ThemeManager />
       <DebugConsole />
+      <RotationSuggestionDialog
+        suggestion={config?.rotation?.notification_channels?.popup === false ? null : rotationSuggestion}
+        switching={rotationSwitching}
+        onSwitch={handleRotationSwitch}
+        onDismiss={() => handleRotationDismiss(config?.rotation?.cooldown_seconds)}
+        onRemindLater={() => handleRotationDismiss(300)}
+      />
       {showUpdateNotification && (
         <UpdateNotification onClose={() => setShowUpdateNotification(false)} />
       )}

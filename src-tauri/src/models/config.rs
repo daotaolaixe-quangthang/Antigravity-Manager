@@ -2,6 +2,10 @@ use serde::{Deserialize, Serialize};
 use crate::proxy::ProxyConfig;
 use crate::modules::cloudflared::CloudflaredConfig;
 
+fn default_true() -> bool {
+    true
+}
+
 /// Application configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -26,6 +30,8 @@ pub struct AppConfig {
     pub pinned_quota_models: PinnedQuotaModelsConfig, // [NEW] Pinned quota models list
     #[serde(default)]
     pub circuit_breaker: CircuitBreakerConfig, // [NEW] Circuit breaker configuration
+    #[serde(default)]
+    pub rotation: RotationConfig, // [NEW] Native IDE semi-auto rotation
     #[serde(default)]
     pub hidden_menu_items: Vec<String>, // Hidden menu item path list
     #[serde(default)]
@@ -168,6 +174,82 @@ impl Default for CircuitBreakerConfig {
     }
 }
 
+/// Native IDE semi-auto rotation notification channels
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RotationNotificationChannels {
+    #[serde(default = "default_true")]
+    pub tray: bool,
+    #[serde(default = "default_true")]
+    pub popup: bool,
+}
+
+impl Default for RotationNotificationChannels {
+    fn default() -> Self {
+        Self {
+            tray: true,
+            popup: true,
+        }
+    }
+}
+
+/// Native IDE semi-auto rotation config
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RotationConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_rotation_mode")]
+    pub mode: String,
+    #[serde(default = "default_rotation_target_models")]
+    pub target_models: Vec<String>,
+    #[serde(default = "default_rotation_threshold")]
+    pub quota_threshold_percentage: u32,
+    #[serde(default = "default_true")]
+    pub trigger_on_forbidden: bool,
+    #[serde(default = "default_true")]
+    pub trigger_on_validation_blocked: bool,
+    #[serde(default = "default_rotation_cooldown")]
+    pub cooldown_seconds: u64,
+    #[serde(default)]
+    pub notification_channels: RotationNotificationChannels,
+    #[serde(default = "default_true")]
+    pub require_confirmation: bool,
+}
+
+fn default_rotation_mode() -> String {
+    "semi_auto".to_string()
+}
+
+fn default_rotation_target_models() -> Vec<String> {
+    vec![
+        "gemini-3.1-pro-high".to_string(),
+        "gemini-3-pro-high".to_string(),
+    ]
+}
+
+fn default_rotation_threshold() -> u32 {
+    15
+}
+
+fn default_rotation_cooldown() -> u64 {
+    600
+}
+
+impl Default for RotationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            mode: default_rotation_mode(),
+            target_models: default_rotation_target_models(),
+            quota_threshold_percentage: default_rotation_threshold(),
+            trigger_on_forbidden: true,
+            trigger_on_validation_blocked: true,
+            cooldown_seconds: default_rotation_cooldown(),
+            notification_channels: RotationNotificationChannels::default(),
+            require_confirmation: true,
+        }
+    }
+}
+
 impl AppConfig {
     pub fn new() -> Self {
         Self {
@@ -186,6 +268,7 @@ impl AppConfig {
             quota_protection: QuotaProtectionConfig::default(),
             pinned_quota_models: PinnedQuotaModelsConfig::default(),
             circuit_breaker: CircuitBreakerConfig::default(),
+            rotation: RotationConfig::default(),
             hidden_menu_items: Vec::new(),
             cloudflared: CloudflaredConfig::default(),
         }

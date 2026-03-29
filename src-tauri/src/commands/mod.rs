@@ -117,19 +117,28 @@ pub async fn reorder_accounts(
 pub async fn switch_account(
     app: tauri::AppHandle,
     proxy_state: tauri::State<'_, crate::commands::proxy::ProxyServiceState>,
+    rotation_state: tauri::State<'_, crate::modules::rotation::RotationState>,
     account_id: String,
 ) -> Result<(), String> {
     let service = modules::account_service::AccountService::new(
         crate::modules::integration::SystemManager::Desktop(app.clone()),
     );
 
-    service.switch_account(&account_id).await?;
+    if rotation_state.is_switch_in_progress() {
+        return Err("Another account switch is already in progress".to_string());
+    }
+
+    rotation_state.set_switch_in_progress(true);
+    let result = service.switch_account(&account_id).await;
+    rotation_state.set_switch_in_progress(false);
+    result?;
 
     // 同步托盘
     crate::modules::tray::update_tray_menus(&app);
 
     // [FIX #820] Notify proxy to clear stale session bindings and reload accounts
     let _ = crate::commands::proxy::reload_proxy_accounts(proxy_state).await;
+    let _ = evaluate_rotation_with_events(&app, &rotation_state).await;
 
     Ok(())
 }
@@ -188,6 +197,7 @@ async fn internal_refresh_account_quota(
 pub async fn fetch_account_quota(
     app: tauri::AppHandle,
     proxy_state: tauri::State<'_, crate::commands::proxy::ProxyServiceState>,
+    rotation_state: tauri::State<'_, crate::modules::rotation::RotationState>,
     account_id: String,
 ) -> crate::error::AppResult<QuotaData> {
     modules::logger::log_info(&format!("手动刷新配额请求: {}", account_id));
@@ -208,6 +218,8 @@ pub async fn fetch_account_quota(
     if let Some(instance) = instance_lock.as_ref() {
         let _ = instance.token_manager.reload_account(&account_id).await;
     }
+
+    let _ = evaluate_rotation_with_events(&app, &rotation_state).await;
 
     Ok(quota)
 }
@@ -241,8 +253,11 @@ pub async fn refresh_all_quotas_internal(
 pub async fn refresh_all_quotas(
     proxy_state: tauri::State<'_, crate::commands::proxy::ProxyServiceState>,
     app_handle: tauri::AppHandle,
+    rotation_state: tauri::State<'_, crate::modules::rotation::RotationState>,
 ) -> Result<RefreshStats, String> {
-    refresh_all_quotas_internal(&proxy_state, Some(app_handle)).await
+    let stats = refresh_all_quotas_internal(&proxy_state, Some(app_handle.clone())).await?;
+    let _ = evaluate_rotation_with_events(&app_handle, &rotation_state).await;
+    Ok(stats)
 }
 /// 获取设备指纹（当前 storage.json + 账号绑定）
 #[tauri::command]
@@ -337,6 +352,7 @@ pub async fn load_config() -> Result<AppConfig, String> {
 pub async fn save_config(
     app: tauri::AppHandle,
     proxy_state: tauri::State<'_, crate::commands::proxy::ProxyServiceState>,
+    rotation_state: tauri::State<'_, crate::modules::rotation::RotationState>,
     config: AppConfig,
 ) -> Result<(), String> {
     modules::save_app_config(&config)?;
@@ -388,6 +404,8 @@ pub async fn save_config(
             .await;
         tracing::debug!("已同步热更新反代服务配置");
     }
+
+    let _ = evaluate_rotation_with_events(&app, &rotation_state).await;
 
     Ok(())
 }
@@ -1028,4 +1046,93 @@ pub async fn get_token_stats_account_trend_daily(
     days: i64,
 ) -> Result<Vec<crate::modules::token_stats::AccountTrendPoint>, String> {
     crate::modules::token_stats::get_account_trend_daily(days)
+}
+
+fn emit_rotation_event(
+    app: &tauri::AppHandle,
+    event_name: &str,
+    payload: impl serde::Serialize + Clone,
+) {
+    let _ = app.emit(event_name, payload);
+    crate::modules::tray::update_tray_menus(app);
+}
+
+async fn evaluate_rotation_with_events(
+    app: &tauri::AppHandle,
+    rotation_state: &crate::modules::rotation::RotationState,
+) -> Result<crate::modules::rotation::RotationStatus, String> {
+    let config = crate::modules::config::load_app_config()?;
+    let outcome = crate::modules::rotation::evaluate_and_update_state(rotation_state, &config.rotation)?;
+    match outcome {
+        crate::modules::rotation::EvaluationOutcome::Suggested(suggestion) => {
+            emit_rotation_event(app, "rotation://suggested", &suggestion);
+        }
+        crate::modules::rotation::EvaluationOutcome::Cleared => {
+            emit_rotation_event(app, "rotation://dismissed", ());
+        }
+        crate::modules::rotation::EvaluationOutcome::NoChange => {}
+    }
+
+    Ok(rotation_state.status(config.rotation.enabled))
+}
+
+#[tauri::command]
+pub async fn get_rotation_status(
+    rotation_state: tauri::State<'_, crate::modules::rotation::RotationState>,
+) -> Result<crate::modules::rotation::RotationStatus, String> {
+    let config = crate::modules::config::load_app_config()?;
+    Ok(rotation_state.status(config.rotation.enabled))
+}
+
+#[tauri::command]
+pub async fn evaluate_rotation_now(
+    app: tauri::AppHandle,
+    rotation_state: tauri::State<'_, crate::modules::rotation::RotationState>,
+) -> Result<crate::modules::rotation::RotationStatus, String> {
+    evaluate_rotation_with_events(&app, &rotation_state).await
+}
+
+#[tauri::command]
+pub async fn dismiss_rotation_suggestion(
+    app: tauri::AppHandle,
+    rotation_state: tauri::State<'_, crate::modules::rotation::RotationState>,
+    remind_after_seconds: Option<u64>,
+) -> Result<(), String> {
+    let config = crate::modules::config::load_app_config()?;
+    if crate::modules::rotation::dismiss_suggestion(&rotation_state, &config.rotation, remind_after_seconds) {
+        emit_rotation_event(&app, "rotation://dismissed", ());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn execute_rotation_switch(
+    app: tauri::AppHandle,
+    proxy_state: tauri::State<'_, crate::commands::proxy::ProxyServiceState>,
+    rotation_state: tauri::State<'_, crate::modules::rotation::RotationState>,
+) -> Result<(), String> {
+    let suggestion = rotation_state
+        .suggestion()
+        .ok_or_else(|| "No active rotation suggestion".to_string())?;
+
+    if rotation_state.is_switch_in_progress() {
+        return Err("Rotation switch already in progress".to_string());
+    }
+
+    rotation_state.set_switch_in_progress(true);
+    let result = async {
+        let service = modules::account_service::AccountService::new(
+            crate::modules::integration::SystemManager::Desktop(app.clone()),
+        );
+        service.switch_account(&suggestion.candidate.account_id).await?;
+
+        let _ = crate::commands::proxy::reload_proxy_accounts(proxy_state).await;
+        crate::modules::rotation::clear_suggestion(&rotation_state);
+        emit_rotation_event(&app, "rotation://executed", &suggestion);
+        Ok::<(), String>(())
+    }
+    .await;
+
+    rotation_state.set_switch_in_progress(false);
+    result
 }

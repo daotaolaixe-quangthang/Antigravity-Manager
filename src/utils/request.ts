@@ -45,6 +45,10 @@ const COMMAND_MAPPING: Record<string, { url: string; method: 'GET' | 'POST' | 'D
   'fetch_zai_models': { url: '/api/zai/models/fetch', method: 'POST' },
   'load_config': { url: '/api/config', method: 'GET' },
   'save_config': { url: '/api/config', method: 'POST' },
+  'get_rotation_status': { url: '/api/rotation/status', method: 'GET' },
+  'evaluate_rotation_now': { url: '/api/rotation/evaluate', method: 'POST' },
+  'dismiss_rotation_suggestion': { url: '/api/rotation/dismiss', method: 'POST' },
+  'execute_rotation_switch': { url: '/api/rotation/execute', method: 'POST' },
   'get_proxy_stats': { url: '/api/proxy/stats', method: 'GET' },
   'set_proxy_monitor_enabled': { url: '/api/proxy/monitor/toggle', method: 'POST' },
 

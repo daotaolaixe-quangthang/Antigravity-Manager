@@ -24,6 +24,7 @@ pub mod log_bridge;
 pub mod security_db;
 pub mod user_token_db;
 pub mod version;
+pub mod rotation;
 
 use crate::models;
 

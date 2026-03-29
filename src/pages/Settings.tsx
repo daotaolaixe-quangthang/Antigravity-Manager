@@ -3,7 +3,7 @@ import { Save, Github, User, MessageCircle, ExternalLink, RefreshCw, Heart, Coff
 import { request as invoke } from '../utils/request';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useConfigStore } from '../stores/useConfigStore';
-import { AppConfig } from '../types/config';
+import { AppConfig, RotationConfig } from '../types/config';
 import ModalDialog from '../components/common/ModalDialog';
 import { showToast } from '../components/common/ToastContainer';
 import QuotaProtection from '../components/settings/QuotaProtection';
@@ -76,6 +76,20 @@ function Settings() {
         circuit_breaker: {
             enabled: false,
             backoff_steps: [30, 60, 120, 300, 600]
+        },
+        rotation: {
+            enabled: false,
+            mode: 'semi_auto',
+            target_models: ['gemini-3.1-pro-high', 'gemini-3-pro-high'],
+            quota_threshold_percentage: 15,
+            trigger_on_forbidden: true,
+            trigger_on_validation_blocked: true,
+            cooldown_seconds: 600,
+            notification_channels: {
+                tray: true,
+                popup: true,
+            },
+            require_confirmation: true,
         },
         hidden_menu_items: [],  // 菜单显示设置：默认不隐藏任何菜单项
 
@@ -169,6 +183,16 @@ function Settings() {
             if (proxyEnabled && proxyUrl) {
                 showToast(t('proxy.config.upstream_proxy.restart_hint'), 'info');
             }
+        } catch (error) {
+            showToast(`${t('common.error')}: ${error}`, 'error');
+        }
+    };
+
+    const updateRotationConfig = async (nextRotation: RotationConfig) => {
+        const newFormData = { ...formData, rotation: nextRotation };
+        setFormData(newFormData);
+        try {
+            await saveConfig(newFormData);
         } catch (error) {
             showToast(`${t('common.error')}: ${error}`, 'error');
         }
@@ -810,6 +834,160 @@ function Settings() {
                                         pinned_quota_models: newConfig
                                     })}
                                 />
+                            </div>
+
+                            <div className="group bg-white dark:bg-base-100 rounded-xl p-5 border border-gray-100 dark:border-base-200 hover:border-amber-200 transition-all duration-300 shadow-sm">
+                                <div className="flex items-center justify-between">
+                                    <div className="flex items-center gap-4">
+                                        <div className="w-10 h-10 rounded-xl bg-amber-50 dark:bg-amber-900/20 flex items-center justify-center text-amber-500 group-hover:bg-amber-500 group-hover:text-white transition-all duration-300">
+                                            <Activity size={20} />
+                                        </div>
+                                        <div>
+                                            <div className="font-bold text-gray-900 dark:text-gray-100">
+                                                {t('settings.rotation.title', { defaultValue: 'Semi-auto IDE Rotation' })}
+                                            </div>
+                                            <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                                                {t('settings.rotation.desc', { defaultValue: 'Suggest a better logged-in account when the active target model quota is low or blocked.' })}
+                                            </p>
+                                        </div>
+                                    </div>
+                                    <label className="relative inline-flex items-center cursor-pointer">
+                                        <input
+                                            type="checkbox"
+                                            className="sr-only peer"
+                                            checked={formData.rotation.enabled}
+                                            onChange={(e) => updateRotationConfig({
+                                                ...formData.rotation,
+                                                enabled: e.target.checked,
+                                            })}
+                                        />
+                                        <div className="w-11 h-6 bg-gray-200 dark:bg-base-300 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-amber-500 shadow-inner"></div>
+                                    </label>
+                                </div>
+
+                                <div className="mt-5 pt-5 border-t border-gray-50 dark:border-base-300 grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div>
+                                        <label className="block text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">
+                                            {t('settings.rotation.target_models', { defaultValue: 'Target Models' })}
+                                        </label>
+                                        <input
+                                            type="text"
+                                            className="w-full px-3 py-2 bg-gray-50 dark:bg-base-200 border border-gray-100 dark:border-base-300 rounded-lg focus:ring-2 focus:ring-amber-500 outline-none text-sm text-gray-900 dark:text-gray-100"
+                                            value={formData.rotation.target_models.join(', ')}
+                                            onChange={(e) => updateRotationConfig({
+                                                ...formData.rotation,
+                                                target_models: e.target.value
+                                                    .split(',')
+                                                    .map(item => item.trim())
+                                                    .filter(Boolean),
+                                            })}
+                                            placeholder="gemini-3.1-pro-high, gemini-3-pro-high"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">
+                                            {t('settings.rotation.threshold', { defaultValue: 'Quota Threshold %' })}
+                                        </label>
+                                        <input
+                                            type="number"
+                                            className="w-full px-3 py-2 bg-gray-50 dark:bg-base-200 border border-gray-100 dark:border-base-300 rounded-lg focus:ring-2 focus:ring-amber-500 outline-none text-sm font-bold text-amber-600 dark:text-amber-400"
+                                            min="1"
+                                            max="99"
+                                            value={formData.rotation.quota_threshold_percentage}
+                                            onChange={(e) => updateRotationConfig({
+                                                ...formData.rotation,
+                                                quota_threshold_percentage: Math.min(Math.max(parseInt(e.target.value) || 1, 1), 99),
+                                            })}
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">
+                                            {t('settings.rotation.cooldown', { defaultValue: 'Cooldown Seconds' })}
+                                        </label>
+                                        <input
+                                            type="number"
+                                            className="w-full px-3 py-2 bg-gray-50 dark:bg-base-200 border border-gray-100 dark:border-base-300 rounded-lg focus:ring-2 focus:ring-amber-500 outline-none text-sm font-bold text-amber-600 dark:text-amber-400"
+                                            min="60"
+                                            max="86400"
+                                            value={formData.rotation.cooldown_seconds}
+                                            onChange={(e) => updateRotationConfig({
+                                                ...formData.rotation,
+                                                cooldown_seconds: Math.min(Math.max(parseInt(e.target.value) || 60, 60), 86400),
+                                            })}
+                                        />
+                                    </div>
+                                    <div className="space-y-2">
+                                        <label className="block text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">
+                                            {t('settings.rotation.behavior', { defaultValue: 'Behavior' })}
+                                        </label>
+                                        <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                                            <input
+                                                type="checkbox"
+                                                className="checkbox checkbox-sm"
+                                                checked={formData.rotation.trigger_on_forbidden}
+                                                onChange={(e) => updateRotationConfig({
+                                                    ...formData.rotation,
+                                                    trigger_on_forbidden: e.target.checked,
+                                                })}
+                                            />
+                                            {t('settings.rotation.forbidden', { defaultValue: 'Trigger when account becomes forbidden' })}
+                                        </label>
+                                        <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                                            <input
+                                                type="checkbox"
+                                                className="checkbox checkbox-sm"
+                                                checked={formData.rotation.trigger_on_validation_blocked}
+                                                onChange={(e) => updateRotationConfig({
+                                                    ...formData.rotation,
+                                                    trigger_on_validation_blocked: e.target.checked,
+                                                })}
+                                            />
+                                            {t('settings.rotation.validation', { defaultValue: 'Trigger when validation is required' })}
+                                        </label>
+                                        <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                                            <input
+                                                type="checkbox"
+                                                className="checkbox checkbox-sm"
+                                                checked={formData.rotation.notification_channels.tray}
+                                                onChange={(e) => updateRotationConfig({
+                                                    ...formData.rotation,
+                                                    notification_channels: {
+                                                        ...formData.rotation.notification_channels,
+                                                        tray: e.target.checked,
+                                                    },
+                                                })}
+                                            />
+                                            {t('settings.rotation.tray', { defaultValue: 'Show in tray menu' })}
+                                        </label>
+                                        <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                                            <input
+                                                type="checkbox"
+                                                className="checkbox checkbox-sm"
+                                                checked={formData.rotation.notification_channels.popup}
+                                                onChange={(e) => updateRotationConfig({
+                                                    ...formData.rotation,
+                                                    notification_channels: {
+                                                        ...formData.rotation.notification_channels,
+                                                        popup: e.target.checked,
+                                                    },
+                                                })}
+                                            />
+                                            {t('settings.rotation.popup', { defaultValue: 'Show popup in Tools' })}
+                                        </label>
+                                        <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                                            <input
+                                                type="checkbox"
+                                                className="checkbox checkbox-sm"
+                                                checked={formData.rotation.require_confirmation}
+                                                onChange={(e) => updateRotationConfig({
+                                                    ...formData.rotation,
+                                                    require_confirmation: e.target.checked,
+                                                })}
+                                            />
+                                            {t('settings.rotation.confirmation', { defaultValue: 'Require confirmation before switch' })}
+                                        </label>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     )}

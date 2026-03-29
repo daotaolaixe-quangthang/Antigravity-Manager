@@ -1,6 +1,8 @@
 import { useEffect, useRef } from 'react';
 import { useConfigStore } from '../../stores/useConfigStore';
 import { useAccountStore } from '../../stores/useAccountStore';
+import { request as invoke } from '../../utils/request';
+import { isTauri } from '../../utils/env';
 
 function BackgroundTaskRunner() {
     const { config } = useConfigStore();
@@ -70,6 +72,28 @@ function BackgroundTaskRunner() {
             }
         };
     }, [config?.auto_sync, config?.sync_interval]);
+
+    // Native IDE semi-auto rotation evaluator
+    useEffect(() => {
+        if (!config?.rotation?.enabled || !isTauri()) return;
+
+        let intervalId: ReturnType<typeof setTimeout> | null = null;
+
+        const evaluate = () => {
+            invoke('evaluate_rotation_now').catch((error) => {
+                console.warn('[BackgroundTask] Rotation evaluation failed:', error);
+            });
+        };
+
+        evaluate();
+        intervalId = setInterval(evaluate, 60 * 1000);
+
+        return () => {
+            if (intervalId) {
+                clearInterval(intervalId);
+            }
+        };
+    }, [config?.rotation?.enabled, config?.rotation?.cooldown_seconds, config?.rotation?.target_models?.join(',')]);
 
     // Render nothing
     return null;
