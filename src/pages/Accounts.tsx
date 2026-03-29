@@ -81,6 +81,9 @@ function Accounts() {
   const [isWarmuping, setIsWarmuping] = useState(false);
   const [refreshingIds, setRefreshingIds] = useState<Set<string>>(new Set());
   const [errorAccountId, setErrorAccountId] = useState<string | null>(null);
+  const [isImportDropdownOpen, setIsImportDropdownOpen] = useState(false);
+  const importDropdownRef = useRef<HTMLDivElement>(null);
+  const [isImportingFromIde, setIsImportingFromIde] = useState(false);
 
   const handleWarmup = async (accountId: string) => {
     setRefreshingIds((prev) => {
@@ -614,6 +617,46 @@ function Accounts() {
     }
   };
 
+  // Close import dropdown on outside click
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (importDropdownRef.current && !importDropdownRef.current.contains(e.target as Node)) {
+        setIsImportDropdownOpen(false);
+      }
+    };
+    if (isImportDropdownOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [isImportDropdownOpen]);
+
+  const handleImportFromIdeFolder = async () => {
+    setIsImportDropdownOpen(false);
+    if (!isTauri()) {
+      showToast(t('common.tauri_api_not_loaded'), 'error');
+      return;
+    }
+    setIsImportingFromIde(true);
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog');
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: t('accounts.import_from_ide_selecting'),
+      });
+      if (!selected || typeof selected !== 'string') return;
+
+      await invoke('import_from_ide_folder', { folderPath: selected });
+      showToast(t('accounts.import_from_ide_success'), 'success');
+      fetchAccounts();
+    } catch (error) {
+      console.error('Import from IDE folder failed:', error);
+      showToast(t('accounts.import_from_ide_fail', { error: String(error) }), 'error');
+    } finally {
+      setIsImportingFromIde(false);
+    }
+  };
+
   const processImportData = async (content: string) => {
     let importData: Array<{ email?: string; refresh_token?: string }>;
     try {
@@ -1018,16 +1061,58 @@ function Accounts() {
           </label>
           <div className="w-px h-4 bg-gray-200 dark:bg-gray-700 self-center mx-1 shrink-0"></div>
 
-          <button
-            className="px-2.5 py-2 border border-gray-200 dark:border-base-300 text-gray-700 dark:text-gray-300 text-xs font-medium rounded-lg hover:bg-gray-50 dark:hover:bg-base-200 transition-colors flex items-center gap-1.5"
-            onClick={handleImportJson}
-            title={t("accounts.import_json")}
-          >
-            <Upload className="w-3.5 h-3.5" />
-            <span className="hidden lg:inline">
-              {t("accounts.import_json")}
-            </span>
-          </button>
+          {/* Import Dropdown */}
+          <div className="relative" ref={importDropdownRef}>
+            <button
+              className="px-2.5 py-2 border border-gray-200 dark:border-base-300 text-gray-700 dark:text-gray-300 text-xs font-medium rounded-lg hover:bg-gray-50 dark:hover:bg-base-200 transition-colors flex items-center gap-1.5"
+              onClick={() => setIsImportDropdownOpen((v) => !v)}
+              disabled={isImportingFromIde}
+              title={t('common.import')}
+            >
+              <Upload className={`w-3.5 h-3.5 ${isImportingFromIde ? 'animate-pulse' : ''}`} />
+              <span className="hidden lg:inline">
+                {isImportingFromIde ? t('common.loading') : t('common.import')}
+              </span>
+              <svg
+                className={`w-3 h-3 ml-0.5 transition-transform ${isImportDropdownOpen ? 'rotate-180' : ''}`}
+                fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+
+            {isImportDropdownOpen && (
+              <div className="absolute right-0 top-full mt-1.5 z-50 min-w-[220px] bg-white dark:bg-base-100 border border-gray-200 dark:border-base-300 rounded-xl shadow-xl overflow-hidden">
+                {/* Option 1: Import from JSON */}
+                <button
+                  className="w-full flex items-center gap-2.5 px-4 py-2.5 text-xs text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-base-200 transition-colors text-left"
+                  onClick={() => { setIsImportDropdownOpen(false); handleImportJson(); }}
+                >
+                  <Upload className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                  <div>
+                    <div className="font-medium">{t('accounts.import_json')}</div>
+                    <div className="text-gray-400 dark:text-gray-500 text-[10px] mt-0.5">JSON (.json) export file</div>
+                  </div>
+                </button>
+
+                <div className="h-px bg-gray-100 dark:bg-base-300" />
+
+                {/* Option 2: Import from IDE folder */}
+                <button
+                  className="w-full flex items-center gap-2.5 px-4 py-2.5 text-xs text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-base-200 transition-colors text-left"
+                  onClick={handleImportFromIdeFolder}
+                >
+                  <svg className="w-3.5 h-3.5 text-purple-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" />
+                  </svg>
+                  <div>
+                    <div className="font-medium">{t('accounts.import_from_ide')}</div>
+                    <div className="text-gray-400 dark:text-gray-500 text-[10px] mt-0.5">Chọn thư mục .gemini (oauth_creds.json)</div>
+                  </div>
+                </button>
+              </div>
+            )}
+          </div>
 
           <button
             className="px-2.5 py-2 border border-gray-200 dark:border-base-300 text-gray-700 dark:text-gray-300 text-xs font-medium rounded-lg hover:bg-gray-50 dark:hover:bg-base-200 transition-colors flex items-center gap-1.5"

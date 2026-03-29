@@ -461,6 +461,7 @@ pub fn run() {
             commands::import_v1_accounts,
             commands::import_from_db,
             commands::import_custom_db,
+            commands::import_from_ide_folder,
             commands::sync_account_from_db,
             commands::save_text_file,
             commands::read_text_file,

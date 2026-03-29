@@ -253,7 +253,7 @@ impl Default for RotationConfig {
 impl AppConfig {
     pub fn new() -> Self {
         Self {
-            language: "zh".to_string(),
+            language: "en".to_string(),
             theme: "system".to_string(),
             auto_refresh: true,
             refresh_interval: 15,

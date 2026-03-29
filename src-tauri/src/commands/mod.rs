@@ -562,6 +562,92 @@ pub async fn import_custom_db(
     Ok(account)
 }
 
+/// 从 Antigravity IDE 配置目录导入账号
+/// 读取指定目录下的 oauth_creds.json 并提取 refresh_token
+#[tauri::command]
+pub async fn import_from_ide_folder(
+    app: tauri::AppHandle,
+    proxy_state: tauri::State<'_, crate::commands::proxy::ProxyServiceState>,
+    folder_path: String,
+) -> Result<Account, String> {
+    modules::logger::log_info(&format!(
+        "从 IDE 配置目录导入账号: {}",
+        folder_path
+    ));
+
+    // 1. 路径安全校验
+    validate_path(&folder_path)?;
+
+    let folder = std::path::Path::new(&folder_path);
+
+    // 2. 读取 oauth_creds.json (必须存在)
+    let creds_path = folder.join("oauth_creds.json");
+    if !creds_path.exists() {
+        return Err(format!(
+            "未在所选目录中找到 oauth_creds.json，请确认选择了正确的 Antigravity IDE 配置目录 (如 C:\\Users\\Admin\\.gemini)"
+        ));
+    }
+
+    let creds_content = std::fs::read_to_string(&creds_path)
+        .map_err(|e| format!("读取 oauth_creds.json 失败: {}", e))?;
+
+    // 3. 解析 JSON 提取 refresh_token
+    let creds: serde_json::Value = serde_json::from_str(&creds_content)
+        .map_err(|e| format!("解析 oauth_creds.json 失败: {}", e))?;
+
+    let refresh_token = creds
+        .get("refresh_token")
+        .and_then(|v| v.as_str())
+        .ok_or("oauth_creds.json 中未找到 refresh_token 字段")?;
+
+    if !refresh_token.starts_with("1//") {
+        return Err(format!(
+            "oauth_creds.json 中的 refresh_token 格式无效 (应以 '1//' 开头)"
+        ));
+    }
+
+    // 4. 尝试从 google_accounts.json 读取 email (可选)
+    let email = folder
+        .join("google_accounts.json")
+        .exists()
+        .then(|| {
+            std::fs::read_to_string(folder.join("google_accounts.json"))
+                .ok()
+                .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+                .and_then(|v| v.get("active").and_then(|e| e.as_str()).map(str::to_owned))
+        })
+        .flatten()
+        .unwrap_or_default();
+
+    modules::logger::log_info(&format!(
+        "从 IDE 配置目录读取到账号: email={:?}, token={}...",
+        email,
+        &refresh_token[..std::cmp::min(10, refresh_token.len())]
+    ));
+
+    // 5. 复用 add_account 逻辑
+    let service = modules::account_service::AccountService::new(
+        crate::modules::integration::SystemManager::Desktop(app.clone()),
+    );
+
+    let mut account = service.add_account(refresh_token).await?;
+
+    // 6. 设为当前账号
+    let account_id = account.id.clone();
+    modules::account::set_current_account_id(&account_id)?;
+
+    // 7. 自动触发刷新额度
+    let _ = internal_refresh_account_quota(&app, &mut account).await;
+
+    // 8. 刷新托盘图标
+    crate::modules::tray::update_tray_menus(&app);
+
+    // 9. Reload token pool
+    let _ = crate::commands::proxy::reload_proxy_accounts(proxy_state).await;
+
+    Ok(account)
+}
+
 #[tauri::command]
 pub async fn sync_account_from_db(
     app: tauri::AppHandle,

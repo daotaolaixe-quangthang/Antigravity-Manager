@@ -84,8 +84,15 @@ i18n
                 translation: my,
             },
         },
+        lng: "en",              // Always start in English; App.tsx overrides to config.language after load
         fallbackLng: "en",
         debug: false, // Set to true for development
+
+        detection: {
+            // Disable localStorage/cookie auto-detection — language is managed entirely by AppConfig
+            order: [],
+            caches: [],
+        },
 
         interpolation: {
             escapeValue: false, // not needed for react as it escapes by default
