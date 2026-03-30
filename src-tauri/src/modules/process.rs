@@ -712,8 +712,8 @@ pub fn start_antigravity() -> Result<(), String> {
         .and_then(|c| c.antigravity_executable.clone());
     let args = config.and_then(|c| c.antigravity_args.clone());
 
-    if let Some(mut path_str) = manual_path {
-        let mut path = std::path::PathBuf::from(&path_str);
+    if let Some(path_str) = manual_path {
+        let path = std::path::PathBuf::from(&path_str);
 
         #[cfg(target_os = "macos")]
         {
@@ -725,8 +725,42 @@ pub fn start_antigravity() -> Result<(), String> {
                         "Detected macOS path inside .app bundle, auto-correcting to: {}",
                         corrected_app
                     ));
-                    path_str = corrected_app.to_string();
-                    path = std::path::PathBuf::from(&path_str);
+                    let path_str = corrected_app.to_string();
+                    let path = std::path::PathBuf::from(&path_str);
+
+                    if path.exists() {
+                        crate::modules::logger::log_info(&format!("Starting with bound target path: {}", path_str));
+
+                        if path_str.ends_with(".app") || path.is_dir() {
+                            let mut cmd = Command::new("open");
+                            cmd.arg("-a").arg(&path_str);
+
+                            if let Some(ref args) = args {
+                                for arg in args {
+                                    cmd.arg(arg);
+                                }
+                            }
+
+                            cmd.spawn().map_err(|e| format!("Startup failed (open): {}", e))?;
+                        } else {
+                            let mut cmd = Command::new(&path_str);
+
+                            if let Some(ref args) = args {
+                                for arg in args {
+                                    cmd.arg(arg);
+                                }
+                            }
+
+                            cmd.spawn()
+                                .map_err(|e| format!("Startup failed (direct): {}", e))?;
+                        }
+
+                        crate::modules::logger::log_info(&format!(
+                            "Antigravity startup command sent (bound target path: {}, args: {:?})",
+                            path_str, args
+                        ));
+                        return Ok(());
+                    }
                 }
             }
         }
@@ -1042,6 +1076,145 @@ pub fn get_user_data_dir_from_process() -> Option<std::path::PathBuf> {
     }
 
     None
+}
+
+pub fn get_user_data_dir_from_args(args: &[String]) -> Option<std::path::PathBuf> {
+    for i in 0..args.len() {
+        if args[i] == "--user-data-dir" && i + 1 < args.len() {
+            let path = std::path::PathBuf::from(&args[i + 1]);
+            if path.exists() {
+                return Some(path);
+            }
+        } else if args[i].starts_with("--user-data-dir=") {
+            let parts: Vec<&str> = args[i].splitn(2, '=').collect();
+            if parts.len() == 2 {
+                let path = std::path::PathBuf::from(parts[1]);
+                if path.exists() {
+                    return Some(path);
+                }
+            }
+        }
+    }
+
+    None
+}
+
+pub fn get_configured_antigravity_args() -> Option<Vec<String>> {
+    crate::modules::config::load_app_config()
+        .ok()
+        .and_then(|c| c.antigravity_args)
+}
+
+pub fn get_configured_antigravity_executable_path() -> Option<std::path::PathBuf> {
+    crate::modules::config::load_app_config()
+        .ok()
+        .and_then(|c| c.antigravity_executable)
+        .and_then(|p| std::path::PathBuf::from(p).canonicalize().ok())
+}
+
+pub fn start_antigravity_with_target(
+    executable_path: Option<&std::path::PathBuf>,
+    args: Option<&[String]>,
+) -> Result<(), String> {
+    crate::modules::logger::log_info("Starting Antigravity...");
+
+    let configured_path = get_configured_antigravity_executable_path();
+    let configured_args = get_configured_antigravity_args();
+    let manual_path = executable_path
+        .cloned()
+        .or(configured_path)
+        .map(|p| p.to_string_lossy().to_string());
+    let args = args.map(|a| a.to_vec()).or(configured_args);
+
+    if let Some(path_str) = manual_path {
+        #[cfg(target_os = "macos")]
+        let (path_str, path) = {
+            if let Some(app_idx) = path_str.find(".app") {
+                let corrected_app = &path_str[..app_idx + 4];
+                if corrected_app != path_str {
+                    crate::modules::logger::log_info(&format!(
+                        "Detected macOS path inside .app bundle, auto-correcting to: {}",
+                        corrected_app
+                    ));
+                    let corrected = corrected_app.to_string();
+                    let corrected_path = std::path::PathBuf::from(&corrected);
+                    (corrected, corrected_path)
+                } else {
+                    let resolved = std::path::PathBuf::from(&path_str);
+                    (path_str, resolved)
+                }
+            } else {
+                let resolved = std::path::PathBuf::from(&path_str);
+                (path_str, resolved)
+            }
+        };
+
+        #[cfg(not(target_os = "macos"))]
+        let path = std::path::PathBuf::from(&path_str);
+
+        if path.exists() {
+            crate::modules::logger::log_info(&format!("Starting with bound target path: {}", path_str));
+
+            #[cfg(target_os = "macos")]
+            {
+                if path_str.ends_with(".app") || path.is_dir() {
+                    let mut cmd = Command::new("open");
+                    cmd.arg("-a").arg(&path_str);
+
+                    if let Some(ref args) = args {
+                        for arg in args {
+                            cmd.arg(arg);
+                        }
+                    }
+
+                    cmd.spawn().map_err(|e| format!("Startup failed (open): {}", e))?;
+                } else {
+                    let mut cmd = Command::new(&path_str);
+
+                    if let Some(ref args) = args {
+                        for arg in args {
+                            cmd.arg(arg);
+                        }
+                    }
+
+                    cmd.spawn()
+                        .map_err(|e| format!("Startup failed (direct): {}", e))?;
+                }
+            }
+
+            #[cfg(not(target_os = "macos"))]
+            {
+                let mut cmd = Command::new(&path_str);
+
+                #[cfg(target_os = "windows")]
+                {
+                    use crate::utils::command::CommandExtWrapper;
+                    cmd.creation_flags_windows();
+                }
+
+                if let Some(ref args) = args {
+                    for arg in args {
+                        cmd.arg(arg);
+                    }
+                }
+
+                cmd.spawn().map_err(|e| format!("Startup failed: {}", e))?;
+            }
+
+            crate::modules::logger::log_info(&format!(
+                "Antigravity startup command sent (bound target path: {}, args: {:?})",
+                path_str, args
+            ));
+            return Ok(());
+        }
+
+        crate::modules::logger::log_warn(&format!(
+            "Bound target path does not exist: {}, falling back to default detection",
+            path_str
+        ));
+    }
+
+    start_antigravity()
 }
 
 /// Get Antigravity executable path (cross-platform)

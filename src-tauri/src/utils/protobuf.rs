@@ -353,10 +353,103 @@ pub fn create_string_value_payload(value: &str) -> Vec<u8> {
     encode_string_field(3, value)
 }
 
+pub fn derive_display_name(email: &str) -> String {
+    let local_part = email.split('@').next().unwrap_or_default().trim();
+
+    let words: Vec<String> = local_part
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| {
+            let mut chars = segment.chars();
+            match chars.next() {
+                Some(first) => {
+                    let mut word = String::new();
+                    word.extend(first.to_uppercase());
+                    word.push_str(chars.as_str());
+                    word
+                }
+                None => String::new(),
+            }
+        })
+        .filter(|segment| !segment.is_empty())
+        .collect();
+
+    if words.is_empty() {
+        return if email.trim().is_empty() {
+            "Antigravity User".to_string()
+        } else {
+            email.to_string()
+        };
+    }
+
+    if words.len() == 1 && words[0].chars().all(|c| c.is_ascii_digit()) {
+        return email.to_string();
+    }
+
+    words.join(" ")
+}
+
+pub fn derive_display_initials(display_name: &str) -> String {
+    let initials: String = display_name
+        .split_whitespace()
+        .filter_map(|segment| segment.chars().next())
+        .filter(|c| c.is_alphabetic())
+        .take(2)
+        .flat_map(|c| c.to_uppercase())
+        .collect();
+
+    if initials.is_empty() {
+        "AG".to_string()
+    } else {
+        initials
+    }
+}
+
 /// 创建最小可用的 UserStatus payload。
 ///
 /// Antigravity 的认证链路要求 `uss-userStatus` 里至少存在 sentinel key；
 /// 账号展示和会话绑定依赖名字和邮箱，因此这里写入最小身份信息即可。
 pub fn create_minimal_user_status_payload(email: &str) -> Vec<u8> {
-    [encode_string_field(3, email), encode_string_field(7, email)].concat()
+    let display_name = derive_display_name(email);
+
+    [
+        encode_string_field(1, &display_name),
+        encode_string_field(3, email),
+        encode_string_field(7, email),
+    ]
+    .concat()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        create_minimal_user_status_payload, derive_display_initials, derive_display_name, find_field,
+    };
+
+    #[test]
+    fn derive_display_name_formats_email_local_part() {
+        assert_eq!(derive_display_name("john.doe@example.com"), "John Doe");
+        assert_eq!(derive_display_name("alice_bob99@example.com"), "Alice Bob99");
+    }
+
+    #[test]
+    fn derive_display_name_falls_back_for_sparse_input() {
+        assert_eq!(derive_display_name("12345@example.com"), "12345@example.com");
+        assert_eq!(derive_display_name(""), "Antigravity User");
+    }
+
+    #[test]
+    fn derive_display_initials_uses_display_name_words() {
+        assert_eq!(derive_display_initials("John Doe"), "JD");
+        assert_eq!(derive_display_initials("12345@example.com"), "AG");
+    }
+
+    #[test]
+    fn minimal_user_status_payload_preserves_email_and_adds_display_name() {
+        let payload = create_minimal_user_status_payload("john.doe@example.com");
+
+        assert_eq!(find_field(&payload, 1).unwrap().unwrap(), b"John Doe");
+        assert_eq!(find_field(&payload, 3).unwrap().unwrap(), b"john.doe@example.com");
+        assert_eq!(find_field(&payload, 7).unwrap().unwrap(), b"john.doe@example.com");
+    }
 }

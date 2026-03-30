@@ -2,6 +2,31 @@ use crate::utils::protobuf;
 use rusqlite::Connection;
 use std::path::PathBuf;
 
+use super::version::AntigravityVersion;
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct ResolvedAntigravityTarget {
+    pub executable_path: Option<PathBuf>,
+    pub startup_args: Option<Vec<String>>,
+    pub user_data_dir: Option<PathBuf>,
+    pub storage_path: PathBuf,
+    pub db_path: PathBuf,
+    pub version: Option<AntigravityVersion>,
+}
+
+fn build_auth_status_json(access_token: &str, email: &str) -> String {
+    let display_name = protobuf::derive_display_name(email);
+    let initials = protobuf::derive_display_initials(&display_name);
+
+    serde_json::json!({
+        "name": initials,
+        "apiKey": access_token,
+        "email": email,
+    })
+    .to_string()
+}
+
 fn get_antigravity_path() -> Option<PathBuf> {
     if let Ok(config) = crate::modules::config::load_app_config() {
         if let Some(path_str) = config.antigravity_executable {
@@ -12,6 +37,86 @@ fn get_antigravity_path() -> Option<PathBuf> {
         }
     }
     crate::modules::process::get_antigravity_executable_path()
+}
+
+fn get_default_storage_path() -> Result<PathBuf, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let home = dirs::home_dir().ok_or("failed_to_get_home_dir")?;
+        return Ok(home.join("Library/Application Support/Antigravity/User/globalStorage/storage.json"));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let appdata = std::env::var("APPDATA").map_err(|_| "failed_to_get_appdata_env".to_string())?;
+        return Ok(PathBuf::from(appdata).join("Antigravity\\User\\globalStorage\\storage.json"));
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let home = dirs::home_dir().ok_or("failed_to_get_home_dir")?;
+        return Ok(home.join(".config/Antigravity/User/globalStorage/storage.json"));
+    }
+}
+
+fn build_profile_paths(user_data_dir: Option<&PathBuf>, executable_path: Option<&PathBuf>) -> Result<(PathBuf, PathBuf), String> {
+    if let Some(user_data_dir) = user_data_dir {
+        let storage_path = user_data_dir.join("User").join("globalStorage").join("storage.json");
+        let db_path = user_data_dir.join("User").join("globalStorage").join("state.vscdb");
+        return Ok((storage_path, db_path));
+    }
+
+    if let Some(executable_path) = executable_path {
+        if let Some(parent_dir) = executable_path.parent() {
+            let storage_path = parent_dir
+                .join("data")
+                .join("user-data")
+                .join("User")
+                .join("globalStorage")
+                .join("storage.json");
+            let db_path = parent_dir
+                .join("data")
+                .join("user-data")
+                .join("User")
+                .join("globalStorage")
+                .join("state.vscdb");
+
+            if storage_path.exists() || db_path.exists() {
+                return Ok((storage_path, db_path));
+            }
+        }
+    }
+
+    let storage_path = get_default_storage_path()?;
+    let db_path = storage_path
+        .parent()
+        .ok_or_else(|| "failed_to_get_storage_parent_dir".to_string())?
+        .join("state.vscdb");
+    Ok((storage_path, db_path))
+}
+
+pub fn resolve_antigravity_target() -> Result<ResolvedAntigravityTarget, String> {
+    let startup_args = crate::modules::process::get_configured_antigravity_args()
+        .or_else(crate::modules::process::get_args_from_running_process);
+    let user_data_dir = startup_args
+        .as_ref()
+        .and_then(|args| crate::modules::process::get_user_data_dir_from_args(args));
+    let executable_path = crate::modules::process::get_configured_antigravity_executable_path()
+        .or_else(crate::modules::process::get_path_from_running_process)
+        .or_else(get_antigravity_path);
+    let (storage_path, db_path) = build_profile_paths(user_data_dir.as_ref(), executable_path.as_ref())?;
+    let version = executable_path
+        .as_ref()
+        .and_then(|path| crate::modules::version::get_antigravity_version_for_path(path).ok());
+
+    Ok(ResolvedAntigravityTarget {
+        executable_path,
+        startup_args,
+        user_data_dir,
+        storage_path,
+        db_path,
+        version,
+    })
 }
 
 /// Get Antigravity database path (cross-platform)
@@ -62,6 +167,7 @@ pub fn get_db_path() -> Result<PathBuf, String> {
 }
 
 /// Inject Token and Email into database
+#[allow(dead_code)]
 pub fn inject_token(
     db_path: &PathBuf,
     access_token: &str,
@@ -71,11 +177,35 @@ pub fn inject_token(
     is_gcp_tos: bool,
     project_id: Option<&str>,
 ) -> Result<String, String> {
+    inject_token_with_version(
+        db_path,
+        access_token,
+        refresh_token,
+        expiry,
+        email,
+        is_gcp_tos,
+        project_id,
+        None,
+    )
+}
+
+pub fn inject_token_with_version(
+    db_path: &PathBuf,
+    access_token: &str,
+    refresh_token: &str,
+    expiry: i64,
+    email: &str,
+    is_gcp_tos: bool,
+    project_id: Option<&str>,
+    version_override: Option<&AntigravityVersion>,
+) -> Result<String, String> {
     crate::modules::logger::log_info("Starting Token injection...");
-    
-    // 1. Detect Antigravity version
-    let version_result = crate::modules::version::get_antigravity_version();
-    
+
+    let version_result = version_override
+        .cloned()
+        .map(Ok)
+        .unwrap_or_else(crate::modules::version::get_antigravity_version);
+
     match version_result {
         Ok(ver) => {
             crate::modules::logger::log_info(&format!(
@@ -221,18 +351,9 @@ fn inject_user_status(conn: &Connection, email: &str) -> Result<(), String> {
 /// recognized by the IDE after a token-injection switch: the Login screen either shows
 /// no pre-filled account or fails authentication silently (TH1 bug).
 fn inject_auth_status(conn: &Connection, access_token: &str, email: &str) -> Result<(), String> {
-    // Derive 1-2 letter initials from email prefix
-    // e.g. "john.doe@gmail.com" → "JD", "dothituoi000@gmail.com" → "DO"
-    let prefix = email.split('@').next().unwrap_or("user");
-    let name: String = prefix
-        .split(|c: char| !c.is_alphabetic())
-        .filter(|s: &&str| !s.is_empty())
-        .take(2)
-        .map(|s| s.chars().next().unwrap_or('?').to_uppercase().to_string())
-        .collect();
-    let name = if name.is_empty() { "AG".to_string() } else { name };
-
-    let json = format!(r#"{{"name":"{}","apiKey":"{}"}}"#, name, access_token);
+    let display_name = protobuf::derive_display_name(email);
+    let name = protobuf::derive_display_initials(&display_name);
+    let json = build_auth_status_json(access_token, email);
 
     conn.execute(
         "INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)",
@@ -343,6 +464,9 @@ fn inject_old_format(
     )
     .map_err(|e| format!("Failed to write data: {}", e))?;
 
+    inject_auth_status(&conn, access_token, email)?;
+    inject_user_status(&conn, email)?;
+
     // Inject Onboarding flag
     conn.execute(
         "INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)",
@@ -351,4 +475,124 @@ fn inject_old_format(
     .map_err(|e| format!("Failed to write onboarding flag: {}", e))?;
 
     Ok("Token injection successful (old format)".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_auth_status_json, inject_new_format};
+    use super::resolve_antigravity_target;
+    use crate::utils::protobuf;
+    use rusqlite::Connection;
+    use serde_json::Value;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_db_path(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("antigravity-db-test-{}-{}.vscdb", name, unique))
+    }
+
+    #[test]
+    fn auth_status_json_contains_email_and_initials() {
+        let json = build_auth_status_json("token-123", "john.doe@example.com");
+        let value: Value = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(value["name"], "JD");
+        assert_eq!(value["apiKey"], "token-123");
+        assert_eq!(value["email"], "john.doe@example.com");
+    }
+
+    #[test]
+    fn inject_new_format_bootstraps_empty_db_for_first_time_account() {
+        let db_path = temp_db_path("first-time");
+
+        let result = inject_new_format(
+            &db_path,
+            "access-token",
+            "refresh-token",
+            1_700_000_000,
+            "john.doe@example.com",
+            true,
+            Some("project-123"),
+        );
+
+        assert!(result.is_ok(), "expected injection success, got: {result:?}");
+
+        let conn = Connection::open(&db_path).unwrap();
+
+        let keys = [
+            "antigravityUnifiedStateSync.oauthToken",
+            "antigravityUnifiedStateSync.userStatus",
+            "antigravityAuthStatus",
+            "antigravityUnifiedStateSync.enterprisePreferences",
+            "antigravityOnboarding",
+        ];
+
+        for key in keys {
+            let exists: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM ItemTable WHERE key = ?",
+                    [key],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(exists, 1, "missing expected key: {key}");
+        }
+
+        let auth_status: String = conn
+            .query_row(
+                "SELECT value FROM ItemTable WHERE key = ?",
+                ["antigravityAuthStatus"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let auth_status: Value = serde_json::from_str(&auth_status).unwrap();
+        assert_eq!(auth_status["name"], "JD");
+        assert_eq!(auth_status["apiKey"], "access-token");
+        assert_eq!(auth_status["email"], "john.doe@example.com");
+
+        let user_status_entry: String = conn
+            .query_row(
+                "SELECT value FROM ItemTable WHERE key = ?",
+                ["antigravityUnifiedStateSync.userStatus"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let (sentinel, payload) = protobuf::decode_unified_state_entry(&user_status_entry).unwrap();
+        assert_eq!(sentinel, "userStatusSentinelKey");
+        assert_eq!(protobuf::find_field(&payload, 1).unwrap().unwrap(), b"John Doe");
+        assert_eq!(
+            protobuf::find_field(&payload, 3).unwrap().unwrap(),
+            b"john.doe@example.com"
+        );
+        assert_eq!(
+            protobuf::find_field(&payload, 7).unwrap().unwrap(),
+            b"john.doe@example.com"
+        );
+
+        let onboarding: String = conn
+            .query_row(
+                "SELECT value FROM ItemTable WHERE key = ?",
+                ["antigravityOnboarding"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(onboarding, "true");
+
+        drop(conn);
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn resolved_target_keeps_storage_and_db_in_same_profile() {
+        let target = resolve_antigravity_target().unwrap();
+        assert_eq!(
+            target.db_path.parent().unwrap(),
+            target.storage_path.parent().unwrap()
+        );
+    }
 }

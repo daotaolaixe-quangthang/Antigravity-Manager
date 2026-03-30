@@ -21,28 +21,29 @@ pub struct DesktopIntegration {
 impl SystemIntegration for DesktopIntegration {
     async fn on_account_switch(&self, account: &crate::models::Account) -> Result<(), String> {
         crate::modules::logger::log_info(&format!("[Desktop] Executing system switch for: {}", account.email));
-        
-        // 1. 获取存储路径
-        let storage_path = device::get_storage_path()?;
 
-        // 2. 关闭外部进程
+        let target = db::resolve_antigravity_target()?;
+        let storage_path = device::get_storage_path_for_target(&target);
+        let db_path = target.db_path.clone();
+
+        // 1. 关闭外部进程
         if process::is_antigravity_running() {
             process::close_antigravity(20)?;
         }
 
-        // 3. 写入设备 Profile
+        // 2. 写入設備 Profile
         if let Some(ref profile) = account.device_profile {
             device::write_profile(&storage_path, profile)?;
+            let _ = device::sync_state_service_machine_id_value_at_path(&db_path, &profile.dev_device_id);
         }
 
-        // 4. 数据库处理与 Token 注入
-        let db_path = db::get_db_path()?;
+        // 3. 数据库处理与 Token 注入
         if db_path.exists() {
             let backup_path = db_path.with_extension("vscdb.backup");
             let _ = fs::copy(&db_path, &backup_path);
         }
-        
-        db::inject_token(
+
+        db::inject_token_with_version(
             &db_path,
             &account.token.access_token,
             &account.token.refresh_token,
@@ -50,12 +51,16 @@ impl SystemIntegration for DesktopIntegration {
             &account.email,
             account.token.is_gcp_tos,
             account.token.project_id.as_deref(),
+            target.version.as_ref(),
         )?;
 
-        // 5. 重启外部进程
-        process::start_antigravity()?;
+        // 4. 重启外部进程
+        process::start_antigravity_with_target(
+            target.executable_path.as_ref(),
+            target.startup_args.as_deref(),
+        )?;
         
-        // 6. 更新托盘
+        // 5. 更新托盘
         let _ = crate::modules::tray::update_tray_menus(&self.app_handle);
         
         Ok(())

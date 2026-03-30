@@ -8,6 +8,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
+use super::db::ResolvedAntigravityTarget;
+
 const DATA_DIR: &str = ".antigravity_tools";
 const GLOBAL_BASELINE: &str = "device_original.json";
 
@@ -79,6 +81,10 @@ pub fn get_storage_path() -> Result<PathBuf, String> {
     }
 
     Err("storage_json_not_found".to_string())
+}
+
+pub fn get_storage_path_for_target(target: &ResolvedAntigravityTarget) -> PathBuf {
+    target.storage_path.clone()
 }
 
 /// Get directory of storage.json
@@ -293,6 +299,13 @@ pub fn sync_service_machine_id_from_storage(storage_path: &Path) -> Result<(), S
 
 fn sync_state_service_machine_id_value(service_id: &str) -> Result<(), String> {
     let db_path = get_state_db_path()?;
+    sync_state_service_machine_id_value_at_path(&db_path, service_id)
+}
+
+pub(crate) fn sync_state_service_machine_id_value_at_path(
+    db_path: &Path,
+    service_id: &str,
+) -> Result<(), String> {
     if !db_path.exists() {
         logger::log_warn(&format!(
             "state_db_missing: {:?}",
@@ -301,7 +314,7 @@ fn sync_state_service_machine_id_value(service_id: &str) -> Result<(), String> {
         return Ok(());
     }
 
-    let conn = Connection::open(&db_path).map_err(|e| format!("db_open_failed: {}", e))?;
+    let conn = Connection::open(db_path).map_err(|e| format!("db_open_failed: {}", e))?;
     conn.execute(
         "CREATE TABLE IF NOT EXISTS ItemTable (key TEXT PRIMARY KEY, value TEXT);",
         [],

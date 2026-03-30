@@ -36,24 +36,26 @@ fn extract_semver(raw: &str) -> Option<String> {
 
 /// 检测 Antigravity 版本（跨平台）
 pub fn get_antigravity_version() -> Result<AntigravityVersion, String> {
-    // 1. 获取 Antigravity 可执行文件路径（复用现有功能）
     let exe_path = process::get_antigravity_executable_path()
         .ok_or("Unable to locate Antigravity executable")?;
-    
-    // 2. 根据平台读取版本信息
+
+    get_antigravity_version_for_path(&exe_path)
+}
+
+pub fn get_antigravity_version_for_path(exe_path: &PathBuf) -> Result<AntigravityVersion, String> {
     #[cfg(target_os = "macos")]
     {
-        get_version_macos(&exe_path)
+        get_version_macos(exe_path)
     }
-    
+
     #[cfg(target_os = "windows")]
     {
-        get_version_windows(&exe_path)
+        get_version_windows(exe_path)
     }
-    
+
     #[cfg(target_os = "linux")]
     {
-        get_version_linux(&exe_path)
+        get_version_linux(exe_path)
     }
 }
 
