@@ -1038,12 +1038,48 @@ async fn ensure_enterprise_project_ready(account: &mut Account) -> Result<(), St
         return Ok(());
     }
 
+    let client_key = account.token.oauth_client_key.as_deref().unwrap_or("");
+
+    // [FIX] The built-in default OAuth client was historically named "antigravity_enterprise"
+    // but it is NOT a GCP enterprise client and does not require a project_id.
+    // Skip enterprise enforcement for any client that is registered as a built-in client.
+    let registered_clients = crate::modules::oauth::list_oauth_clients().unwrap_or_default();
+
+    if registered_clients
+        .iter()
+        .any(|c| c.is_builtin && c.key.eq_ignore_ascii_case(client_key))
+    {
+        return Ok(());
+    }
+
+    // [FIX][Legacy Migration] Old accounts saved before the built-in key rename still carry
+    // oauth_client_key = "antigravity_enterprise". After the rename the key no longer exists
+    // in the registry, so the builtin check above won't catch them.
+    // Auto-heal: clear the stale enterprise key so this account is permanently freed.
+    if !registered_clients
+        .iter()
+        .any(|c| c.key.eq_ignore_ascii_case(client_key))
+    {
+        crate::modules::logger::log_warn(&format!(
+            "Account {} has enterprise client key '{}' that is no longer in the registry. \
+             Auto-clearing stale key (legacy migration).",
+            account.email, client_key
+        ));
+        account.token.oauth_client_key = None;
+        let _ = save_account(account);
+        return Ok(());
+    }
+
+    // At this point: the client IS in the registry, is NOT builtin, and IS enterprise.
+    // A GCP project_id is genuinely required for this custom enterprise client.
+
     if normalize_project_id(account.token.project_id.as_deref()).is_some() {
         return Ok(());
     }
 
     crate::modules::logger::log_warn(&format!(
-        "Account {} is using enterprise OAuth client but missing project_id. Trying to resolve before switch...",
+        "Account {} is using a custom enterprise OAuth client but missing project_id. \
+         Trying to resolve before switch...",
         account.email
     ));
 
@@ -1058,7 +1094,8 @@ async fn ensure_enterprise_project_ready(account: &mut Account) -> Result<(), St
             Ok(())
         }
         Err(e) => Err(format!(
-            "Account {} cannot be switched safely: missing enterprise project_id and auto-resolve failed ({}). Please re-auth with a non-enterprise OAuth client or provide a valid project-enabled token.",
+            "Account {} cannot be switched safely: missing enterprise project_id and auto-resolve failed ({}). \
+             Please re-auth with a non-enterprise OAuth client or provide a valid project-enabled token.",
             account.email, e
         )),
     }

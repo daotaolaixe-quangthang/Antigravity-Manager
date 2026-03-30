@@ -76,7 +76,7 @@ pub struct OAuthClientDescriptor {
 
 const OAUTH_CLIENTS_ENV: &str = "ANTIGRAVITY_OAUTH_CLIENTS";
 const ACTIVE_OAUTH_CLIENT_ENV: &str = "ANTIGRAVITY_OAUTH_CLIENT_KEY";
-const DEFAULT_OAUTH_CLIENT_KEY: &str = "antigravity_enterprise";
+const DEFAULT_OAUTH_CLIENT_KEY: &str = "antigravity";
 
 static OAUTH_CLIENT_REGISTRY: std::sync::OnceLock<std::sync::RwLock<OAuthClientRegistry>> =
     std::sync::OnceLock::new();
@@ -88,7 +88,7 @@ fn normalize_client_key(key: &str) -> String {
 fn build_registry() -> OAuthClientRegistry {
     let mut clients: Vec<OAuthClientConfig> = vec![OAuthClientConfig {
         key: normalize_client_key(DEFAULT_OAUTH_CLIENT_KEY),
-        label: "Antigravity Enterprise".to_string(),
+        label: "Antigravity".to_string(),
         client_id: CLIENT_ID.to_string(),
         client_secret: CLIENT_SECRET.to_string(),
         is_builtin: true,

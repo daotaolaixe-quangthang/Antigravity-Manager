@@ -141,6 +141,16 @@ pub fn inject_token(
     }
 }
 
+/// Ensure ItemTable schema exists (for brand-new DB files created when IDE has never run)
+fn ensure_item_table_exists(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS ItemTable (
+            key TEXT UNIQUE ON CONFLICT REPLACE,
+            value BLOB
+        );"
+    ).map_err(|e| format!("Failed to ensure ItemTable schema: {}", e))
+}
+
 /// New format injection (>= 1.16.5)
 fn inject_new_format(
     db_path: &PathBuf,
@@ -152,6 +162,10 @@ fn inject_new_format(
     project_id: Option<&str>,
 ) -> Result<String, String> {
     let conn = Connection::open(db_path).map_err(|e| format!("Failed to open database: {}", e))?;
+    
+    // [FIX TH1] Ensure ItemTable exists - for brand-new accounts that have never
+    // signed into the IDE, state.vscdb won't have any tables yet.
+    ensure_item_table_exists(&conn)?;
     
     // Create OAuthTokenInfo (binary)
     let oauth_info = protobuf::create_oauth_info(access_token, refresh_token, expiry, is_gcp_tos);
@@ -230,57 +244,71 @@ fn inject_old_format(
 ) -> Result<String, String> {
     use base64::{engine::general_purpose, Engine as _};
     use rusqlite::Error as SqliteError;
-    
+
     let conn = Connection::open(db_path)
         .map_err(|e| format!("Failed to open database: {}", e))?;
-    
-    // Read current data
-    let current_data: String = conn
-        .query_row(
-            "SELECT value FROM ItemTable WHERE key = ?",
-            ["jetskiStateSync.agentManagerInitState"],
-            |row| row.get(0),
-        )
-        .map_err(|e| match e {
-            SqliteError::QueryReturnedNoRows => {
-                "Old format key does not exist, possibly new version Antigravity".to_string()
-            }
-            _ => format!("Failed to read data: {}", e),
-        })?;
-    
-    // Base64 decode
-    let blob = general_purpose::STANDARD
-        .decode(&current_data)
-        .map_err(|e| format!("Base64 decoding failed: {}", e))?;
-    
+
+    // [FIX TH1] Ensure ItemTable exists — for brand-new accounts whose state.vscdb
+    // was just auto-created by SQLite (empty file, no tables yet).
+    // Without this, SELECT below would error with "no such table: ItemTable"
+    // instead of QueryReturnedNoRows, causing the switch to fail entirely.
+    ensure_item_table_exists(&conn)?;
+
+    // Read current data — if the key doesn't exist yet (brand-new account that has never
+    // signed into the IDE before), treat it as an empty protobuf blob instead of failing.
+    // This is the exact scenario that caused the "switch account works only after first
+    // direct IDE login" bug: the key is absent for new accounts so UPDATE silently did
+    // nothing and the IDE restarted showing the "needs login" state.
+    let blob: Vec<u8> = match conn.query_row(
+        "SELECT value FROM ItemTable WHERE key = ?",
+        ["jetskiStateSync.agentManagerInitState"],
+        |row| row.get::<_, String>(0),
+    ) {
+        Ok(current_data) => {
+            general_purpose::STANDARD
+                .decode(&current_data)
+                .map_err(|e| format!("Base64 decoding failed: {}", e))?
+        }
+        Err(SqliteError::QueryReturnedNoRows) => {
+            // [FIX] Account has never authenticated with the IDE directly.
+            // The key does not exist yet — start from an empty protobuf blob.
+            crate::modules::logger::log_info(
+                "Old format key absent (new account) — creating fresh entry for account switch."
+            );
+            Vec::new()
+        }
+        Err(e) => return Err(format!("Failed to read data: {}", e)),
+    };
+
     // Remove old fields
     let mut clean_data = protobuf::remove_field(&blob, 1)?; // UserID
     clean_data = protobuf::remove_field(&clean_data, 2)?;   // Email
     clean_data = protobuf::remove_field(&clean_data, 6)?;   // OAuthTokenInfo
-    
+
     // Create new fields
     let new_email_field = protobuf::create_email_field(email);
     let new_oauth_field = protobuf::create_oauth_field(access_token, refresh_token, expiry);
-    
+
     // Merge data
-    // We intentionally do NOT re-inject Field 1 (UserID) to force the client 
+    // We intentionally do NOT re-inject Field 1 (UserID) to force the client
     // to re-authenticate the session with the new token.
     let final_data = [clean_data, new_email_field, new_oauth_field].concat();
     let final_b64 = general_purpose::STANDARD.encode(&final_data);
-    
-    // Write to database
+
+    // [FIX] Use INSERT OR REPLACE instead of UPDATE so that brand-new accounts
+    // (where the key row does not yet exist) also get written correctly.
     conn.execute(
-        "UPDATE ItemTable SET value = ? WHERE key = ?",
-        [&final_b64, "jetskiStateSync.agentManagerInitState"],
+        "INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)",
+        ["jetskiStateSync.agentManagerInitState", &final_b64],
     )
     .map_err(|e| format!("Failed to write data: {}", e))?;
-    
+
     // Inject Onboarding flag
     conn.execute(
         "INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)",
         ["antigravityOnboarding", "true"],
     )
     .map_err(|e| format!("Failed to write onboarding flag: {}", e))?;
-    
+
     Ok("Token injection successful (old format)".to_string())
 }
