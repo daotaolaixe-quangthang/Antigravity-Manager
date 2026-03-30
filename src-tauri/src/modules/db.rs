@@ -179,6 +179,12 @@ fn inject_new_format(
     
     inject_user_status(&conn, email)?;
 
+    // [FIX] Inject antigravityAuthStatus — this plain-JSON key is written
+    // by the IDE after its own OAuth flow. Without it, the IDE cannot recognize the
+    // injected token for accounts that have never logged into the IDE directly, causing
+    // the Login screen to appear broken (no pre-filled account / auth fails after login).
+    inject_auth_status(&conn, access_token, email)?;
+
     if let Some(project_id) = project_id.map(str::trim).filter(|pid| !pid.is_empty()) {
         inject_enterprise_project_preference(&conn, project_id)?;
     } else {
@@ -204,6 +210,40 @@ fn inject_user_status(conn: &Connection, email: &str) -> Result<(), String> {
         ["antigravityUnifiedStateSync.userStatus", &entry_b64],
     )
     .map_err(|e| format!("Failed to write user status: {}", e))?;
+
+    Ok(())
+}
+
+/// Inject `antigravityAuthStatus` — plain-JSON key that the IDE writes after its own
+/// OAuth flow. Format from live IDE: `{"name":"<initials>","apiKey":"<access_token>"}`.
+///
+/// Without this key, accounts that have never logged into the IDE directly cannot be
+/// recognized by the IDE after a token-injection switch: the Login screen either shows
+/// no pre-filled account or fails authentication silently (TH1 bug).
+fn inject_auth_status(conn: &Connection, access_token: &str, email: &str) -> Result<(), String> {
+    // Derive 1-2 letter initials from email prefix
+    // e.g. "john.doe@gmail.com" → "JD", "dothituoi000@gmail.com" → "DO"
+    let prefix = email.split('@').next().unwrap_or("user");
+    let name: String = prefix
+        .split(|c: char| !c.is_alphabetic())
+        .filter(|s: &&str| !s.is_empty())
+        .take(2)
+        .map(|s| s.chars().next().unwrap_or('?').to_uppercase().to_string())
+        .collect();
+    let name = if name.is_empty() { "AG".to_string() } else { name };
+
+    let json = format!(r#"{{"name":"{}","apiKey":"{}"}}"#, name, access_token);
+
+    conn.execute(
+        "INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)",
+        ["antigravityAuthStatus", &json],
+    )
+    .map_err(|e| format!("Failed to write auth status: {}", e))?;
+
+    crate::modules::logger::log_info(&format!(
+        "Injected antigravityAuthStatus for {} (name={})",
+        email, name
+    ));
 
     Ok(())
 }
